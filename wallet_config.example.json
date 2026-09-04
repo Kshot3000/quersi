@@ -3,5 +3,17 @@
   "enableKeystoneHardwareWallet": false,
   "enableHighSecurity": true,
   "enableRemoteNotifications": true,
-  "enableSwap": true
+  "enableSwap": true,
+  "enableEncryptedAccount": true,
+  "enableMultisig": true,
+  "endpoints": {
+    "rpc": [
+      "https://a1-planck.quantus.cat",
+      "https://a2-planck.quantus.cat",
+      "https://matcha-latte.quantus.com"
+    ],
+    "graphQl": ["https://sub2.quantus.com/v1/graphql"],
+    "explorer": "https://explorer.quantus.com",
+    "senoti": "https://snt.quantus.com/api"
+  }
 }

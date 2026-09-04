@@ -1,6 +1,6 @@
 # Quersi (QRC) - Quantus Remote Config
 
-Minimal Axum service that serves wallet feature flags, USD exchange rates, and Ethereum address risk reports over HTTP.
+Minimal Axum service that serves wallet feature flags and network endpoint overrides, USD exchange rates, and Ethereum address risk reports over HTTP.
 
 ## Design
 
@@ -38,12 +38,31 @@ Example wallet payload:
     "enableKeystoneHardwareWallet": false,
     "enableHighSecurity": true,
     "enableRemoteNotifications": true,
-    "enableSwap": true
+    "enableSwap": true,
+    "endpoints": {
+      "rpc": ["https://a1-planck.quantus.cat", "https://a2-planck.quantus.cat"],
+      "graphQl": ["https://sub2.quantus.com/v1/graphql"],
+      "explorer": "https://explorer.quantus.com",
+      "senoti": "https://snt.quantus.com/api"
+    }
   }
 }
 ```
 
-Payload is opaque JSON: add or change keys by updating the file — no service redeploy required. Only invalid JSON is rejected.
+Flags are opaque JSON: add or change keys by updating the file — no service redeploy required.
+
+### Network endpoints
+
+The optional `endpoints` object moves wallets to another network without an app release. Every key is optional; a wallet keeps its built-in default for any key that is absent.
+
+| Key | Type | Used for |
+|-----|------|----------|
+| `rpc` | non-empty array of `http(s)`/`ws(s)` URLs | chain RPC nodes (the wallet picks the fastest and fails over) |
+| `graphQl` | non-empty array of `http(s)` URLs | Subsquid/Hasura indexer |
+| `explorer` | `http(s)` URL | block-explorer links |
+| `senoti` | `http(s)` URL | push-notification service |
+
+Because a malformed URL here would strand every wallet on an unreachable network, the `endpoints` block is validated when the file is loaded: a present key with the wrong shape is rejected like invalid JSON (startup fails; a hot reload keeps the last known good file and logs a warning). Everything outside `endpoints` is still passed through untouched.
 
 Exchange rates are fetched from [ExchangeRate-API](https://www.exchangerate-api.com/) (v6, USD base) and cached in memory until `time_next_update_unix`.
 
@@ -69,7 +88,7 @@ cargo run -- --config config/default.toml
 Every ~250ms the service re-reads the JSON file:
 
 - Valid update → memory updated
-- Invalid JSON → **last known good kept** (warn log)
+- Invalid JSON or malformed `endpoints` → **last known good kept** (warn log)
 
 Startup **fails hard** if the initial file is missing or invalid.
 
