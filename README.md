@@ -62,11 +62,11 @@ The service runs behind Cloudflare, which stamps every proxied request with the 
 }
 ```
 
-- `nearBlockedCountries`: country codes as Cloudflare reports them, case-insensitive. The list of countries where NEAR Intents is unavailable is NEAR Intents' terms, not this file's; keep them in step.
-- `nearBlockedRanges`: CIDR ranges (v4 or v6) blocked whatever their country. The client IP is `CF-Connecting-IP`, else the first `X-Forwarded-For` address, else `X-Real-IP`.
+- `nearBlockedCountries`: country codes as Cloudflare reports them. Case and whitespace are normalized; anything that is not two letters is refused. The list of countries where NEAR Intents is unavailable is NEAR Intents' terms, not this file's; keep them in step.
+- `nearBlockedRanges`: CIDR ranges (v4 or v6) blocked whatever their country. They are checked against every client address the headers report: `CF-Connecting-IPv6` (the real address when Cloudflare's Pseudo IPv4 rewrites the others), `CF-Connecting-IP`, the first `X-Forwarded-For` address and `X-Real-IP`.
 - `nearAllowedWhenUnknown`: what to answer when no country header is present or Cloudflare reports `XX` or `T1` (Tor). Off by default: a missing header closes the gate rather than opening it.
 
-An unknown key or an unparsable range is rejected: at startup the service fails, on reload the last good config stays and a warning is logged.
+An unknown key, a malformed country or an unparsable range is rejected: at startup the service fails, on reload the last good config stays and a warning is logged.
 
 `geo_config.example.json` starts from the NEAR terms of service (Polar Express Limited, 2026-02-24), whose prohibited jurisdictions are Afghanistan, Belarus, the Central African Republic, Cuba, the Democratic Republic of Congo, Guinea-Bissau, Haiti, Iran, Libya, Mali, Myanmar, Nicaragua, North Korea, Russia, Somalia, South Sudan, Sudan, Syria, Venezuela, Yemen and Zimbabwe, plus the Crimea, Donetsk, Luhansk, Zaporizhzhia and Kherson regions of Ukraine. Cloudflare reports those regions as `UA` like the rest of the country, so the example blocks Ukraine as a whole. The list is a compliance call: review it before the first deploy and whenever the terms change.
 

@@ -2,21 +2,59 @@ use std::{net::IpAddr, path::PathBuf};
 
 use axum::http::HeaderMap;
 use ipnet::IpNet;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::watched_json::{WatchedJson, WatchedJsonError};
 
 pub type GeoError = WatchedJsonError;
 
+/// An ISO 3166-1 alpha-2 code as Cloudflare reports it: two ASCII letters,
+/// kept upper case. Whitespace and case in a config entry or a header are
+/// normalized away; anything else is refused, so a typo in the block list
+/// fails the load instead of silently matching nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CountryCode(String);
+
+impl CountryCode {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let code: String = raw
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .map(|c| c.to_ascii_uppercase())
+            .collect();
+        if code.len() == 2 && code.bytes().all(|b| b.is_ascii_uppercase()) {
+            Ok(Self(code))
+        } else {
+            Err(format!("{raw:?} is not a two-letter country code"))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for CountryCode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::parse(&String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Serialize for CountryCode {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
 /// Where NEAR Intents may not be used. Hot-reloaded from a JSON file, so
 /// adding a country or a range is an edit on the host, not a deploy. An
-/// unknown key or an unparsable range is rejected so a typo cannot silently
-/// open the gate.
+/// unknown key, a malformed country or an unparsable range is rejected so a
+/// typo cannot silently open the gate.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GeoConfig {
-    /// ISO 3166-1 alpha-2 codes, as Cloudflare reports them in CF-IPCountry.
-    pub near_blocked_countries: Vec<String>,
+    /// Countries as Cloudflare reports them in CF-IPCountry.
+    pub near_blocked_countries: Vec<CountryCode>,
     /// CIDR ranges blocked whatever country they resolve to.
     #[serde(default)]
     pub near_blocked_ranges: Vec<IpNet>,
@@ -31,7 +69,7 @@ pub struct GeoConfig {
 #[serde(rename_all = "camelCase")]
 pub struct GeoLookup {
     pub ip: Option<IpAddr>,
-    pub country: Option<String>,
+    pub country: Option<CountryCode>,
     pub near_allowed: bool,
 }
 
@@ -45,9 +83,19 @@ pub struct GeoService {
 
 impl GeoService {
     const COUNTRY_HEADER: &'static str = "cf-ipcountry";
-    const IP_HEADERS: [&'static str; 3] = ["cf-connecting-ip", "x-forwarded-for", "x-real-ip"];
-    /// Cloudflare's codes for "unknown" and "Tor exit node".
-    const UNKNOWN_COUNTRIES: [&'static str; 2] = ["XX", "T1"];
+    /// Cloudflare's code for a country it cannot tell. Its Tor code, T1, is not
+    /// two letters and so already parses as unknown.
+    const UNKNOWN_COUNTRY: &'static str = "XX";
+    /// Every header a proxy chain reports a client address in, Cloudflare's
+    /// first. With Cloudflare's Pseudo IPv4 on, CF-Connecting-IP holds a
+    /// synthetic IPv4 and the real address is in CF-Connecting-IPv6, so block
+    /// ranges are checked against all of them and the first is reported.
+    const IP_HEADERS: [&'static str; 4] = [
+        "cf-connecting-ipv6",
+        "cf-connecting-ip",
+        "x-forwarded-for",
+        "x-real-ip",
+    ];
 
     pub fn new(file_path: impl Into<PathBuf>) -> Result<Self, GeoError> {
         Ok(Self {
@@ -56,59 +104,50 @@ impl GeoService {
     }
 
     pub fn lookup(&self, headers: &HeaderMap) -> Result<GeoLookup, GeoError> {
-        let ip = Self::client_ip(headers);
+        let ips = Self::client_ips(headers);
         let country = Self::country(headers);
         let near_allowed = self
             .config
-            .with(|config| Self::near_allowed(config, ip, country.as_deref()))?;
+            .with(|config| Self::near_allowed(config, &ips, country.as_ref()))?;
         Ok(GeoLookup {
-            ip,
+            ip: ips.first().copied(),
             country,
             near_allowed,
         })
     }
 
-    /// A blocked range wins over any country; then the country decides, and
-    /// no country at all falls back to `nearAllowedWhenUnknown`.
-    fn near_allowed(config: &GeoConfig, ip: Option<IpAddr>, country: Option<&str>) -> bool {
-        if let Some(ip) = ip {
-            if config
+    /// A blocked range on any reported address wins over any country; then the
+    /// country decides, and no country at all falls back to `nearAllowedWhenUnknown`.
+    fn near_allowed(config: &GeoConfig, ips: &[IpAddr], country: Option<&CountryCode>) -> bool {
+        if ips.iter().any(|ip| {
+            config
                 .near_blocked_ranges
                 .iter()
-                .any(|range| range.contains(&ip))
-            {
-                return false;
-            }
+                .any(|range| range.contains(ip))
+        }) {
+            return false;
         }
         match country {
             None => config.near_allowed_when_unknown,
-            Some(code) => !config
-                .near_blocked_countries
-                .iter()
-                .any(|blocked| blocked.eq_ignore_ascii_case(code)),
+            Some(code) => !config.near_blocked_countries.contains(code),
         }
     }
 
-    fn country(headers: &HeaderMap) -> Option<String> {
-        let code = headers
-            .get(Self::COUNTRY_HEADER)?
-            .to_str()
-            .ok()?
-            .trim()
-            .to_ascii_uppercase();
-        if code.is_empty() || Self::UNKNOWN_COUNTRIES.contains(&code.as_str()) {
-            return None;
-        }
-        Some(code)
+    fn country(headers: &HeaderMap) -> Option<CountryCode> {
+        let code = CountryCode::parse(headers.get(Self::COUNTRY_HEADER)?.to_str().ok()?).ok()?;
+        (code.as_str() != Self::UNKNOWN_COUNTRY).then_some(code)
     }
 
-    /// The first address of the first known header: Cloudflare's own, then
-    /// the forwarding headers a plain reverse proxy sets.
-    fn client_ip(headers: &HeaderMap) -> Option<IpAddr> {
-        Self::IP_HEADERS.iter().find_map(|name| {
-            let value = headers.get(*name)?.to_str().ok()?;
-            value.split(',').next()?.trim().parse().ok()
-        })
+    /// The first address of each known header; the rest of a forwarding chain
+    /// are proxies.
+    fn client_ips(headers: &HeaderMap) -> Vec<IpAddr> {
+        Self::IP_HEADERS
+            .iter()
+            .filter_map(|name| {
+                let value = headers.get(*name)?.to_str().ok()?;
+                value.split(',').next()?.trim().parse().ok()
+            })
+            .collect()
     }
 }
 
@@ -117,9 +156,10 @@ mod tests {
     use super::*;
     use crate::services::watched_json::test_support::write_temp_json;
     use axum::http::HeaderValue;
+    use std::time::Duration;
 
     const CONFIG: &str = r#"{
-  "nearBlockedCountries": ["CN", "gb"],
+  "nearBlockedCountries": ["CN", " gb "],
   "nearBlockedRanges": ["203.0.113.0/24", "2001:db8::/32"]
 }"#;
 
@@ -138,12 +178,17 @@ mod tests {
         headers
     }
 
+    fn country(lookup: &GeoLookup) -> Option<&str> {
+        lookup.country.as_ref().map(CountryCode::as_str)
+    }
+
     #[tokio::test]
-    async fn blocks_listed_countries_whatever_their_case() {
+    async fn blocks_listed_countries_whatever_their_case_or_spacing() {
         let service = service(CONFIG);
         for (code, allowed) in [
             ("GB", false),
             ("gb", false),
+            (" Gb ", false),
             ("CN", false),
             ("DE", true),
             ("US", true),
@@ -151,8 +196,8 @@ mod tests {
             let lookup = service.lookup(&headers(&[("cf-ipcountry", code)])).unwrap();
             assert_eq!(lookup.near_allowed, allowed, "{code}");
             assert_eq!(
-                lookup.country.as_deref(),
-                Some(code.to_ascii_uppercase().as_str())
+                country(&lookup),
+                Some(code.trim().to_ascii_uppercase().as_str())
             );
         }
     }
@@ -164,10 +209,12 @@ mod tests {
             vec![],
             vec![("cf-ipcountry", "XX")],
             vec![("cf-ipcountry", "T1")],
+            vec![("cf-ipcountry", "RUS")],
+            vec![("cf-ipcountry", "")],
         ] {
             let lookup = closed.lookup(&headers(&pairs)).unwrap();
-            assert_eq!(lookup.country, None);
-            assert!(!lookup.near_allowed);
+            assert_eq!(country(&lookup), None, "{pairs:?}");
+            assert!(!lookup.near_allowed, "{pairs:?}");
         }
 
         let open = service(r#"{"nearBlockedCountries": ["CN"], "nearAllowedWhenUnknown": true}"#);
@@ -210,6 +257,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn checks_the_real_ipv6_behind_cloudflares_pseudo_ipv4() {
+        let service = service(CONFIG);
+        let lookup = service
+            .lookup(&headers(&[
+                ("cf-ipcountry", "DE"),
+                ("cf-connecting-ip", "240.16.0.1"),
+                ("cf-connecting-ipv6", "2001:db8::1"),
+            ]))
+            .unwrap();
+        assert_eq!(lookup.ip, Some("2001:db8::1".parse().unwrap()));
+        assert!(!lookup.near_allowed);
+
+        let blocked_v4_behind_allowed_v6 = service
+            .lookup(&headers(&[
+                ("cf-ipcountry", "DE"),
+                ("cf-connecting-ip", "203.0.113.1"),
+                ("cf-connecting-ipv6", "2001:4860::1"),
+            ]))
+            .unwrap();
+        assert!(!blocked_v4_behind_allowed_v6.near_allowed);
+    }
+
+    #[tokio::test]
     async fn takes_the_first_forwarded_address_and_ignores_garbage() {
         let service = service(CONFIG);
         let lookup = service
@@ -232,13 +302,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_a_bad_range_or_an_unknown_key_at_startup() {
+    async fn rejects_a_bad_country_a_bad_range_or_an_unknown_key_at_startup() {
         for config in [
+            r#"{"nearBlockedCountries": ["RUS"]}"#,
+            r#"{"nearBlockedCountries": ["R1"]}"#,
+            r#"{"nearBlockedCountries": [""]}"#,
             r#"{"nearBlockedCountries": [], "nearBlockedRanges": ["203.0.113.0/99"]}"#,
             r#"{"nearBlockedCountries": [], "nearBlockedCountry": ["CN"]}"#,
         ] {
             let err = GeoService::new(write_temp_json("geo.json", config)).expect_err(config);
             assert!(matches!(err, GeoError::ParseJson(_)), "{config}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_reload_with_a_bad_country_keeps_the_last_policy_and_a_good_one_is_normalized() {
+        let path = write_temp_json("geo.json", r#"{"nearBlockedCountries": ["RU"]}"#);
+        let service = GeoService::new(path.clone()).unwrap();
+        let ru = headers(&[("cf-ipcountry", "RU")]);
+        let de = headers(&[("cf-ipcountry", "DE")]);
+        assert!(!service.lookup(&ru).unwrap().near_allowed);
+
+        std::fs::write(&path, r#"{"nearBlockedCountries": ["RUS"]}"#).unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(!service.lookup(&ru).unwrap().near_allowed);
+
+        std::fs::write(&path, r#"{"nearBlockedCountries": [" de "]}"#).unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while service.lookup(&de).unwrap().near_allowed {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "reload not applied within 2s"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(service.lookup(&ru).unwrap().near_allowed);
     }
 }
