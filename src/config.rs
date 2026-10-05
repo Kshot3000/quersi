@@ -26,9 +26,12 @@ pub struct LoggingConfig {
     pub level: String,
 }
 
+/// The hot-reloaded JSON files: the wallet feature flags and the NEAR Intents
+/// geo gate's blocked countries and ranges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteConfigsConfig {
     pub wallet_configs_file: String,
+    pub geo_configs_file: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +83,10 @@ impl Config {
         PathBuf::from(&self.remote_configs.wallet_configs_file)
     }
 
+    pub fn geo_config_path(&self) -> PathBuf {
+        PathBuf::from(&self.remote_configs.geo_configs_file)
+    }
+
     fn resolve_relative_paths(&mut self, config_path: &str) -> Result<(), ConfigError> {
         let base_dir = Path::new(config_path)
             .parent()
@@ -87,6 +94,8 @@ impl Config {
 
         self.remote_configs.wallet_configs_file =
             resolve_path(base_dir, &self.remote_configs.wallet_configs_file);
+        self.remote_configs.geo_configs_file =
+            resolve_path(base_dir, &self.remote_configs.geo_configs_file);
 
         Ok(())
     }

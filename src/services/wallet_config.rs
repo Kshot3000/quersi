@@ -1,108 +1,33 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::path::PathBuf;
 
-use serde_json::Value;
-use tokio::{task::JoinHandle, time};
+use serde_json::{Map, Value};
 
-#[derive(Debug, thiserror::Error)]
-pub enum WalletConfigsError {
-    #[error("failed to read wallet configs file: {0}")]
-    ReadFile(#[from] std::io::Error),
-    #[error("failed to parse wallet configs JSON: {0}")]
-    ParseJson(#[from] serde_json::Error),
-    #[error("failed to read wallet configs: {0}")]
-    ReadLock(String),
-}
+use super::watched_json::{WatchedJson, WatchedJsonError};
 
+pub type WalletConfigsError = WatchedJsonError;
+
+/// The wallet feature flags: an opaque JSON object, hot-reloaded from disk.
 #[derive(Debug)]
 pub struct WalletConfigService {
-    wallet_configs: Arc<RwLock<Value>>,
-    _watch_task: JoinHandle<()>,
+    file: WatchedJson<Map<String, Value>>,
 }
 
 impl WalletConfigService {
     pub fn new(file_path: impl Into<PathBuf>) -> Result<Self, WalletConfigsError> {
-        let file_path = file_path.into();
-
-        let configs = Self::load_flags_sync(&file_path)?;
-        let wallet_configs = Arc::new(RwLock::new(configs));
-
-        let wallet_flags_clone = wallet_configs.clone();
-        let poll_interval = Duration::from_millis(250);
-
-        let watch_task = tokio::spawn(async move {
-            let mut interval = time::interval(poll_interval);
-            interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-            let mut last_reload_failed = false;
-
-            loop {
-                interval.tick().await;
-
-                match Self::load_flags_async(&file_path).await {
-                    Ok(updated_flags) => {
-                        last_reload_failed = false;
-                        if let Ok(mut write_guard) = wallet_flags_clone.write() {
-                            if *write_guard == updated_flags {
-                                continue;
-                            }
-
-                            *write_guard = updated_flags;
-                            tracing::info!("Wallet configs reloaded from {}", file_path.display());
-                        }
-                    }
-                    Err(err) => {
-                        if !last_reload_failed {
-                            tracing::warn!(
-                                "Failed to reload wallet configs from {}: {}. Using last known good configs.",
-                                file_path.display(),
-                                err
-                            );
-                            last_reload_failed = true;
-                        }
-                    }
-                }
-            }
-        });
-
         Ok(Self {
-            wallet_configs,
-            _watch_task: watch_task,
+            file: WatchedJson::new(file_path)?,
         })
     }
 
-    pub fn get_wallet_configs(&self) -> Result<Value, WalletConfigsError> {
-        let guard = self
-            .wallet_configs
-            .read()
-            .map_err(|_| WalletConfigsError::ReadLock("lock poisoned".to_string()))?;
-        Ok(guard.clone())
-    }
-
-    fn load_flags_sync(config_path: &Path) -> Result<Value, WalletConfigsError> {
-        let content = std::fs::read(config_path)?;
-        let flags = serde_json::from_slice::<Value>(&content)?;
-        Ok(flags)
-    }
-
-    async fn load_flags_async(config_path: &Path) -> Result<Value, WalletConfigsError> {
-        let content = tokio::fs::read(config_path).await?;
-        let flags = serde_json::from_slice::<Value>(&content)?;
-        Ok(flags)
-    }
-}
-
-impl Drop for WalletConfigService {
-    fn drop(&mut self) {
-        self._watch_task.abort();
+    pub fn get_wallet_configs(&self) -> Result<Map<String, Value>, WalletConfigsError> {
+        self.file.get()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::time::Duration;
     use uuid::Uuid;
 

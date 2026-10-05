@@ -7,7 +7,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::services::{
-    exchange_rate::ExchangeRateError, risk_checker::RiskCheckerError,
+    exchange_rate::ExchangeRateError, geo_service::GeoError, risk_checker::RiskCheckerError,
     wallet_config::WalletConfigsError,
 };
 
@@ -27,6 +27,8 @@ pub enum AppError {
     ExchangeRate(#[from] ExchangeRateError),
     #[error(transparent)]
     RiskChecker(#[from] RiskCheckerError),
+    #[error(transparent)]
+    Geo(GeoError),
 }
 
 impl IntoResponse for AppError {
@@ -42,6 +44,13 @@ impl IntoResponse for AppError {
             ),
             AppError::ExchangeRate(err) => map_exchange_rate_error(err),
             AppError::RiskChecker(err) => map_risk_checker_error(err),
+            AppError::Geo(err) => {
+                tracing::error!("Geo lookup error: {err}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "geo lookup unavailable".to_string(),
+                )
+            }
         };
 
         (status, Json(json!({ "error": message }))).into_response()
