@@ -9,6 +9,9 @@ level = "info"
 [remote_configs]
 wallet_configs_file = "../wallet_config.json"
 
+[geo]
+config_file = "../geo_config.json"
+
 [exchange_rate]
 # https://www.exchangerate-api.com/ — v6 key for latest/{base} rates
 api_key = "change-me"

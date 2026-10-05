@@ -1,5 +1,6 @@
 use axum::{
     extract::{Path, State},
+    http::HeaderMap,
     response::IntoResponse,
     Json,
 };
@@ -10,10 +11,14 @@ use crate::{
     error::AppError,
     services::{
         exchange_rate::ExchangeRateSnapshot,
+        geo_service::GeoLookup,
         risk_checker::{RiskCheckerError, RiskCheckerService, RiskReport},
     },
     AppState,
 };
+
+/// Key the geo gate's verdict travels under in the wallet config payload.
+pub const GEO_NEAR_ALLOWED_KEY: &str = "geoNearAllowed";
 
 #[derive(Debug, Serialize)]
 pub struct SuccessResponse<T> {
@@ -26,11 +31,29 @@ impl<T> SuccessResponse<T> {
     }
 }
 
+/// The flags file as is, plus the geo gate's verdict for this caller, so the
+/// wallet learns both in the one request it already makes.
 pub async fn handle_get_wallet_configs(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<SuccessResponse<Value>>, AppError> {
-    let flags = state.wallet_config_service.get_wallet_configs()?;
-    Ok(Json(SuccessResponse::new(flags)))
+    let mut flags = state.wallet_config_service.get_wallet_configs()?;
+    let geo = state.geo_service.lookup(&headers).map_err(AppError::Geo)?;
+    flags.insert(
+        GEO_NEAR_ALLOWED_KEY.to_string(),
+        Value::Bool(geo.near_allowed),
+    );
+    Ok(Json(SuccessResponse::new(Value::Object(flags))))
+}
+
+/// What the gate sees for the caller: their IP, country and verdict. For
+/// checking a block list from the place it is meant to block.
+pub async fn handle_get_geo_near_allowed(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<SuccessResponse<GeoLookup>>, AppError> {
+    let lookup = state.geo_service.lookup(&headers).map_err(AppError::Geo)?;
+    Ok(Json(SuccessResponse::new(lookup)))
 }
 
 pub async fn handle_get_exchange_rate(

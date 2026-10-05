@@ -6,11 +6,12 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use crate::{
     config::Config,
     handlers::{
-        handle_get_exchange_rate, handle_get_risk_report, handle_get_wallet_configs, handle_health,
+        handle_get_exchange_rate, handle_get_geo_near_allowed, handle_get_risk_report,
+        handle_get_wallet_configs, handle_health,
     },
     services::{
-        exchange_rate::ExchangeRateService, risk_checker::RiskCheckerService,
-        wallet_config::WalletConfigService,
+        exchange_rate::ExchangeRateService, geo_service::GeoService,
+        risk_checker::RiskCheckerService, wallet_config::WalletConfigService,
     },
 };
 
@@ -19,6 +20,7 @@ pub struct AppState {
     pub wallet_config_service: Arc<WalletConfigService>,
     pub exchange_rate_service: Arc<ExchangeRateService>,
     pub risk_checker_service: Arc<RiskCheckerService>,
+    pub geo_service: Arc<GeoService>,
 }
 
 pub fn build_router(
@@ -26,11 +28,13 @@ pub fn build_router(
     wallet_config_service: Arc<WalletConfigService>,
     exchange_rate_service: Arc<ExchangeRateService>,
     risk_checker_service: Arc<RiskCheckerService>,
+    geo_service: Arc<GeoService>,
 ) -> Router {
     let state = AppState {
         wallet_config_service,
         exchange_rate_service,
         risk_checker_service,
+        geo_service,
     };
 
     let origins = config.get_cors_allowed_origins();
@@ -44,6 +48,7 @@ pub fn build_router(
         .route("/health", get(handle_health))
         .route("/api/configs/wallet", get(handle_get_wallet_configs))
         .route("/api/exchange-rates", get(handle_get_exchange_rate))
+        .route("/api/geo/near-allowed", get(handle_get_geo_near_allowed))
         .route(
             "/api/risk-checker/{address_or_ens}",
             get(handle_get_risk_report),
@@ -70,7 +75,14 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
     };
 
-    use crate::services::exchange_rate::ExchangeRateSnapshot;
+    use crate::services::{
+        exchange_rate::ExchangeRateSnapshot, watched_json::test_support::write_temp_json,
+    };
+
+    const GEO_CONFIG: &str = r#"{
+  "nearBlockedCountries": ["CN", "GB"],
+  "nearBlockedRanges": ["203.0.113.0/24"]
+}"#;
 
     const VALID_FLAGS: &str = r#"{
   "enableTestButtons": false,
@@ -107,6 +119,9 @@ mod tests {
                 etherscan_calls_per_sec: 3,
                 max_concurrent_requests: 1,
             },
+            geo: crate::config::GeoSection {
+                config_file: String::new(),
+            },
         }
     }
 
@@ -123,23 +138,11 @@ mod tests {
     }
 
     async fn setup_app() -> (Router, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("remote-config-http-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let config_path = dir.join("flags.json");
-        std::fs::write(&config_path, VALID_FLAGS).unwrap();
-
-        let wallet_service = Arc::new(WalletConfigService::new(config_path).expect("service"));
-        let risk_checker_service = Arc::new(RiskCheckerService::new_with_base_url(
+        setup_app_with_risk_checker(Arc::new(RiskCheckerService::new_with_base_url(
             "http://unused",
             "http://unused",
-        ));
-        let app = build_router(
-            &test_config(),
-            wallet_service,
-            cached_exchange_rate_service(),
-            risk_checker_service,
-        );
-        (app, dir)
+        )))
+        .await
     }
 
     async fn setup_app_with_risk_checker(
@@ -151,13 +154,34 @@ mod tests {
         std::fs::write(&config_path, VALID_FLAGS).unwrap();
 
         let wallet_service = Arc::new(WalletConfigService::new(config_path).expect("service"));
+        let geo_service =
+            Arc::new(GeoService::new(write_temp_json("geo.json", GEO_CONFIG)).expect("geo"));
         let app = build_router(
             &test_config(),
             wallet_service,
             cached_exchange_rate_service(),
             risk_checker_service,
+            geo_service,
         );
         (app, dir)
+    }
+
+    async fn get_json(
+        app: Router,
+        uri: &str,
+        headers: &[(&str, &str)],
+    ) -> (StatusCode, serde_json::Value) {
+        let mut request = Request::builder().uri(uri);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let response = app
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap())
     }
 
     #[tokio::test]
@@ -179,6 +203,47 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["data"]["enableSwap"], true);
         assert_eq!(json["data"]["enableTestButtons"], false);
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn wallet_configs_carry_the_geo_verdict_for_the_caller() {
+        let (app, dir) = setup_app().await;
+
+        for (headers, allowed) in [
+            (vec![("cf-ipcountry", "DE")], true),
+            (vec![("cf-ipcountry", "GB")], false),
+            (
+                vec![("cf-ipcountry", "DE"), ("cf-connecting-ip", "203.0.113.4")],
+                false,
+            ),
+            (vec![], false),
+        ] {
+            let (status, json) = get_json(app.clone(), "/api/configs/wallet", &headers).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(json["data"]["geoNearAllowed"], allowed, "{headers:?}");
+            assert_eq!(json["data"]["enableSwap"], true);
+        }
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn geo_near_allowed_shows_what_the_gate_saw() {
+        let (app, dir) = setup_app().await;
+
+        let (status, json) = get_json(
+            app,
+            "/api/geo/near-allowed",
+            &[("cf-ipcountry", "gb"), ("cf-connecting-ip", "198.51.100.7")],
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["data"]["ip"], "198.51.100.7");
+        assert_eq!(json["data"]["country"], "GB");
+        assert_eq!(json["data"]["nearAllowed"], false);
 
         std::fs::remove_dir_all(dir).ok();
     }

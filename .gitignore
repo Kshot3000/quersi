@@ -13,6 +13,7 @@ config/prod.toml
 .DS_Store
 .cursor
 wallet_config.json
+geo_config.json
 
 # Runtime data
 **/data/block-cursor.json
