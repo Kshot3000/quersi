@@ -56,7 +56,7 @@ The service runs behind Cloudflare, which stamps every proxied request with the 
 
 ```json
 {
-  "nearBlockedCountries": ["CN", "GB"],
+  "nearBlockedCountries": ["RU", "IR", "KP"],
   "nearBlockedRanges": ["203.0.113.0/24"],
   "nearAllowedWhenUnknown": false
 }
@@ -68,7 +68,7 @@ The service runs behind Cloudflare, which stamps every proxied request with the 
 
 An unknown key or an unparsable range is rejected: at startup the service fails, on reload the last good config stays and a warning is logged.
 
-`geo_config.example.json` starts from the NEAR terms of service (Polar Express Limited, 2026-02-24), whose prohibited jurisdictions are Afghanistan, Belarus, the Central African Republic, Cuba, the Democratic Republic of Congo, Guinea-Bissau, Haiti, Iran, Libya, Mali, Myanmar, Nicaragua, North Korea, Russia, Somalia, South Sudan, Sudan, Syria, Venezuela, Yemen and Zimbabwe, plus the Crimea, Donetsk, Luhansk, Zaporizhzhia and Kherson regions of Ukraine. Cloudflare reports those regions as `UA`, so they can only be covered by blocking Ukraine as a whole or by ranges. China and the United Kingdom are in the example on Quantus' own decision, not NEAR's terms. The list is a compliance call: review it before the first deploy and whenever the terms change.
+`geo_config.example.json` starts from the NEAR terms of service (Polar Express Limited, 2026-02-24), whose prohibited jurisdictions are Afghanistan, Belarus, the Central African Republic, Cuba, the Democratic Republic of Congo, Guinea-Bissau, Haiti, Iran, Libya, Mali, Myanmar, Nicaragua, North Korea, Russia, Somalia, South Sudan, Sudan, Syria, Venezuela, Yemen and Zimbabwe, plus the Crimea, Donetsk, Luhansk, Zaporizhzhia and Kherson regions of Ukraine. Cloudflare reports those regions as `UA`, so they can only be covered by blocking Ukraine as a whole or by ranges. The list is a compliance call: review it before the first deploy and whenever the terms change.
 
 Exchange rates are fetched from [ExchangeRate-API](https://www.exchangerate-api.com/) (v6, USD base) and cached in memory until `time_next_update_unix`.
 
