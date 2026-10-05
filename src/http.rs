@@ -107,6 +107,7 @@ mod tests {
             },
             remote_configs: crate::config::RemoteConfigsConfig {
                 wallet_configs_file: String::new(),
+                geo_configs_file: String::new(),
             },
             exchange_rate: crate::config::ExchangeRateConfig {
                 api_key: "test-key".to_string(),
@@ -118,9 +119,6 @@ mod tests {
                 infura_base_url: "http://unused".to_string(),
                 etherscan_calls_per_sec: 3,
                 max_concurrent_requests: 1,
-            },
-            geo: crate::config::GeoSection {
-                config_file: String::new(),
             },
         }
     }
