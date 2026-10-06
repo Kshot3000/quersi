@@ -11,7 +11,7 @@ level = "info"
 # Resolved relative to this TOML file → /app/wallet_config.json when mounted.
 # Mount the host-managed flags file at that path (see README Docker section).
 wallet_configs_file = "../wallet_config.json"
-# Blocked countries and ranges for the NEAR Intents gate; mounted like wallet_config.json.
+# Allowed countries and blocked ranges for the NEAR Intents gate; mounted like wallet_config.json.
 geo_configs_file = "../geo_config.json"
 
 [exchange_rate]

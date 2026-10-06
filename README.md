@@ -50,25 +50,25 @@ Payload is opaque JSON: add or change keys by updating the file — no service r
 
 ## NEAR Intents geo gate
 
-NEAR Intents is not available everywhere. The wallet hides its swap button where it is not, and this service decides where that is. The decision rides along in `/api/configs/wallet` as `geoNearAllowed`, so the wallet learns it in the request it already makes; `/api/geo/near-allowed` shows the same verdict with what it was based on, for checking a block list from the place it is meant to block.
+NEAR Intents is offered only in the countries this service allows. The wallet hides its swap button everywhere else. The decision rides along in `/api/configs/wallet` as `geoNearAllowed`, so the wallet learns it in the request it already makes; `/api/geo/near-allowed` shows the same verdict with what it was based on, for checking the allow list from the place in question.
 
-The service runs behind Cloudflare, which stamps every proxied request with the visitor's country (`CF-IPCountry`, ISO 3166-1 alpha-2) and IP (`CF-Connecting-IP`). The gate reads those headers and nothing else; there is no IP database to keep current. Blocking a country is one line in `geo_config.json`, hot-reloaded like the flags:
+The service runs behind Cloudflare, which stamps every proxied request with the visitor's country (`CF-IPCountry`, ISO 3166-1 alpha-2) and IP (`CF-Connecting-IP`). The gate reads those headers and nothing else; there is no IP database to keep current. Allowing a country is one line in `geo_config.json`, hot-reloaded like the flags:
 
 ```json
 {
-  "nearBlockedCountries": ["RU", "IR", "KP"],
+  "nearAllowedCountries": ["SG"],
   "nearBlockedRanges": ["203.0.113.0/24"],
   "nearAllowedWhenUnknown": false
 }
 ```
 
-- `nearBlockedCountries`: country codes as Cloudflare reports them. Case and whitespace are normalized; anything that is not two letters is refused. The list of countries where NEAR Intents is unavailable is NEAR Intents' terms, not this file's; keep them in step.
-- `nearBlockedRanges`: CIDR ranges (v4 or v6) blocked whatever their country. They are checked against every client address the headers report: `CF-Connecting-IPv6` (the real address when Cloudflare's Pseudo IPv4 rewrites the others), `CF-Connecting-IP`, the first `X-Forwarded-For` address and `X-Real-IP`.
+- `nearAllowedCountries`: the only countries NEAR Intents is open to, as codes Cloudflare reports. Every other country is blocked, and an empty list blocks everyone. Case and whitespace are normalized; anything that is not two letters is refused.
+- `nearBlockedRanges`: CIDR ranges (v4 or v6) blocked even inside an allowed country. They are checked against every client address the headers report: `CF-Connecting-IPv6` (the real address when Cloudflare's Pseudo IPv4 rewrites the others), `CF-Connecting-IP`, the first `X-Forwarded-For` address and `X-Real-IP`.
 - `nearAllowedWhenUnknown`: what to answer when no country header is present or Cloudflare reports `XX` or `T1` (Tor). Off by default: a missing header closes the gate rather than opening it.
 
 An unknown key, a malformed country or an unparsable range is rejected: at startup the service fails, on reload the last good config stays and a warning is logged.
 
-`geo_config.example.json` starts from the NEAR terms of service (Polar Express Limited, 2026-02-24), whose prohibited jurisdictions are Afghanistan, Belarus, the Central African Republic, Cuba, the Democratic Republic of Congo, Guinea-Bissau, Haiti, Iran, Libya, Mali, Myanmar, Nicaragua, North Korea, Russia, Somalia, South Sudan, Sudan, Syria, Venezuela, Yemen and Zimbabwe, plus the Crimea, Donetsk, Luhansk, Zaporizhzhia and Kherson regions of Ukraine. Cloudflare reports those regions as `UA` like the rest of the country, so the example blocks Ukraine as a whole. The list is a compliance call: review it before the first deploy and whenever the terms change.
+`geo_config.example.json` allows Singapore only. Opening another country is a compliance call. The NEAR terms of service (Polar Express Limited, 2026-02-24) prohibit Afghanistan, Belarus, the Central African Republic, Cuba, the Democratic Republic of Congo, Guinea-Bissau, Haiti, Iran, Libya, Mali, Myanmar, Nicaragua, North Korea, Russia, Somalia, South Sudan, Sudan, Syria, Venezuela, Yemen and Zimbabwe, plus the Crimea, Donetsk, Luhansk, Zaporizhzhia and Kherson regions of Ukraine. Cloudflare reports those regions as `UA` like the rest of the country, so Ukraine cannot be allowed without them. Review the list before the first deploy and whenever the terms change.
 
 Exchange rates are fetched from [ExchangeRate-API](https://www.exchangerate-api.com/) (v6, USD base) and cached in memory until `time_next_update_unix`.
 

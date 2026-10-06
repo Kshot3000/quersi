@@ -80,7 +80,7 @@ mod tests {
     };
 
     const GEO_CONFIG: &str = r#"{
-  "nearBlockedCountries": ["CN", "GB"],
+  "nearAllowedCountries": ["SG"],
   "nearBlockedRanges": ["203.0.113.0/24"]
 }"#;
 
@@ -210,10 +210,10 @@ mod tests {
         let (app, dir) = setup_app().await;
 
         for (headers, allowed) in [
-            (vec![("cf-ipcountry", "DE")], true),
+            (vec![("cf-ipcountry", "SG")], true),
             (vec![("cf-ipcountry", "GB")], false),
             (
-                vec![("cf-ipcountry", "DE"), ("cf-connecting-ip", "203.0.113.4")],
+                vec![("cf-ipcountry", "SG"), ("cf-connecting-ip", "203.0.113.4")],
                 false,
             ),
             (vec![], false),

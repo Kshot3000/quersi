@@ -27,7 +27,7 @@ pub struct LoggingConfig {
 }
 
 /// The hot-reloaded JSON files: the wallet feature flags and the NEAR Intents
-/// geo gate's blocked countries and ranges.
+/// geo gate's allowed countries and blocked ranges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteConfigsConfig {
     pub wallet_configs_file: String,

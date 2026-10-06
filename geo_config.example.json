@@ -1,8 +1,5 @@
 {
-  "nearBlockedCountries": [
-    "AF", "BY", "CF", "CD", "CU", "GW", "HT", "IR", "LY", "ML", "MM", "NI", "KP",
-    "RU", "SO", "SS", "SD", "SY", "VE", "YE", "ZW", "UA"
-  ],
+  "nearAllowedCountries": ["SG"],
   "nearBlockedRanges": [],
   "nearAllowedWhenUnknown": false
 }

@@ -10,7 +10,7 @@ pub type GeoError = WatchedJsonError;
 
 /// An ISO 3166-1 alpha-2 code as Cloudflare reports it: two ASCII letters,
 /// kept upper case. Whitespace and case in a config entry or a header are
-/// normalized away; anything else is refused, so a typo in the block list
+/// normalized away; anything else is refused, so a typo in the allow list
 /// fails the load instead of silently matching nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CountryCode(String);
@@ -46,15 +46,17 @@ impl Serialize for CountryCode {
     }
 }
 
-/// Where NEAR Intents may not be used. Hot-reloaded from a JSON file, so
-/// adding a country or a range is an edit on the host, not a deploy. An
-/// unknown key, a malformed country or an unparsable range is rejected so a
-/// typo cannot silently open the gate.
+/// Where NEAR Intents may be used: in the listed countries only, and never
+/// from a blocked range. Hot-reloaded from a JSON file, so adding a country or
+/// a range is an edit on the host, not a deploy. An unknown key, a malformed
+/// country or an unparsable range is rejected so a typo cannot silently move
+/// the gate.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GeoConfig {
-    /// Countries as Cloudflare reports them in CF-IPCountry.
-    pub near_blocked_countries: Vec<CountryCode>,
+    /// The only countries NEAR is open to, as Cloudflare reports them in
+    /// CF-IPCountry.
+    pub near_allowed_countries: Vec<CountryCode>,
     /// CIDR ranges blocked whatever country they resolve to.
     #[serde(default)]
     pub near_blocked_ranges: Vec<IpNet>,
@@ -129,7 +131,7 @@ impl GeoService {
         }
         match country {
             None => config.near_allowed_when_unknown,
-            Some(code) => !config.near_blocked_countries.contains(code),
+            Some(code) => config.near_allowed_countries.contains(code),
         }
     }
 
@@ -159,7 +161,7 @@ mod tests {
     use std::time::Duration;
 
     const CONFIG: &str = r#"{
-  "nearBlockedCountries": ["CN", " gb "],
+  "nearAllowedCountries": ["SG", " de "],
   "nearBlockedRanges": ["203.0.113.0/24", "2001:db8::/32"]
 }"#;
 
@@ -183,15 +185,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blocks_listed_countries_whatever_their_case_or_spacing() {
+    async fn allows_only_listed_countries_whatever_their_case_or_spacing() {
         let service = service(CONFIG);
         for (code, allowed) in [
-            ("GB", false),
-            ("gb", false),
-            (" Gb ", false),
-            ("CN", false),
+            ("SG", true),
+            ("sg", true),
+            (" Sg ", true),
             ("DE", true),
-            ("US", true),
+            ("GB", false),
+            ("US", false),
         ] {
             let lookup = service.lookup(&headers(&[("cf-ipcountry", code)])).unwrap();
             assert_eq!(lookup.near_allowed, allowed, "{code}");
@@ -217,7 +219,7 @@ mod tests {
             assert!(!lookup.near_allowed, "{pairs:?}");
         }
 
-        let open = service(r#"{"nearBlockedCountries": ["CN"], "nearAllowedWhenUnknown": true}"#);
+        let open = service(r#"{"nearAllowedCountries": ["SG"], "nearAllowedWhenUnknown": true}"#);
         assert!(open.lookup(&headers(&[])).unwrap().near_allowed);
         assert!(
             !open
@@ -304,11 +306,12 @@ mod tests {
     #[tokio::test]
     async fn rejects_a_bad_country_a_bad_range_or_an_unknown_key_at_startup() {
         for config in [
-            r#"{"nearBlockedCountries": ["RUS"]}"#,
-            r#"{"nearBlockedCountries": ["R1"]}"#,
-            r#"{"nearBlockedCountries": [""]}"#,
-            r#"{"nearBlockedCountries": [], "nearBlockedRanges": ["203.0.113.0/99"]}"#,
-            r#"{"nearBlockedCountries": [], "nearBlockedCountry": ["CN"]}"#,
+            r#"{"nearAllowedCountries": ["SGP"]}"#,
+            r#"{"nearAllowedCountries": ["S1"]}"#,
+            r#"{"nearAllowedCountries": [""]}"#,
+            r#"{"nearAllowedCountries": [], "nearBlockedRanges": ["203.0.113.0/99"]}"#,
+            r#"{"nearAllowedCountries": [], "nearAllowedCountry": ["SG"]}"#,
+            r#"{"nearBlockedCountries": ["RU"]}"#,
         ] {
             let err = GeoService::new(write_temp_json("geo.json", config)).expect_err(config);
             assert!(matches!(err, GeoError::ParseJson(_)), "{config}");
@@ -317,25 +320,25 @@ mod tests {
 
     #[tokio::test]
     async fn a_reload_with_a_bad_country_keeps_the_last_policy_and_a_good_one_is_normalized() {
-        let path = write_temp_json("geo.json", r#"{"nearBlockedCountries": ["RU"]}"#);
+        let path = write_temp_json("geo.json", r#"{"nearAllowedCountries": ["SG"]}"#);
         let service = GeoService::new(path.clone()).unwrap();
-        let ru = headers(&[("cf-ipcountry", "RU")]);
+        let sg = headers(&[("cf-ipcountry", "SG")]);
         let de = headers(&[("cf-ipcountry", "DE")]);
-        assert!(!service.lookup(&ru).unwrap().near_allowed);
+        assert!(service.lookup(&sg).unwrap().near_allowed);
 
-        std::fs::write(&path, r#"{"nearBlockedCountries": ["RUS"]}"#).unwrap();
+        std::fs::write(&path, r#"{"nearAllowedCountries": ["SGP"]}"#).unwrap();
         tokio::time::sleep(Duration::from_millis(400)).await;
-        assert!(!service.lookup(&ru).unwrap().near_allowed);
+        assert!(service.lookup(&sg).unwrap().near_allowed);
 
-        std::fs::write(&path, r#"{"nearBlockedCountries": [" de "]}"#).unwrap();
+        std::fs::write(&path, r#"{"nearAllowedCountries": [" de "]}"#).unwrap();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        while service.lookup(&de).unwrap().near_allowed {
+        while !service.lookup(&de).unwrap().near_allowed {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "reload not applied within 2s"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        assert!(service.lookup(&ru).unwrap().near_allowed);
+        assert!(!service.lookup(&sg).unwrap().near_allowed);
     }
 }
