@@ -345,7 +345,12 @@ impl RiskCheckerService {
             "Unexpected code response format".to_string(),
         ))?;
 
-        Ok(code.len() > 100)
+        // eth_getCode returns "0x" when there is no code at the address.
+        // Any deployed code at all means a contract, however small: an
+        // EIP-1167 minimal proxy's runtime is only 45 bytes (92 chars with
+        // the prefix), so a length threshold misreports proxies as EOAs.
+        let hex = code.strip_prefix("0x").unwrap_or(code);
+        Ok(!hex.is_empty())
     }
 
     pub fn wei_to_eth(wei: &str) -> f64 {
@@ -702,6 +707,39 @@ mod tests {
         let address = "0xd8da6bf26964af9d7eed9e03e53415d37aa96045";
         // A code string longer than 100 chars indicates a contract
         let bytecode = "0x".to_string() + &"60".repeat(60);
+
+        Mock::given(method("GET"))
+            .and(query_param("module", "proxy"))
+            .and(query_param("action", "eth_getCode"))
+            .and(query_param("address", address))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(etherscan_ok(serde_json::json!(bytecode))),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let service = setup_service(&mock_server).await;
+
+        // Act
+        let result = service.is_smart_contract(address).await.unwrap();
+
+        // Assert
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_is_smart_contract_true_minimal_proxy() {
+        // Arrange
+        let mock_server = MockServer::start().await;
+        let address = "0xd8da6bf26964af9d7eed9e03e53415d37aa96045";
+        // An EIP-1167 minimal proxy has a 45-byte runtime (92 chars with the
+        // "0x" prefix) — small, but it is deployed contract code, not an EOA.
+        let bytecode = format!(
+            "0x363d3d373d3d3d363d73{}5af43d82803e903d91602b57fd5bf3",
+            "be".repeat(20)
+        );
+        assert_eq!(bytecode.len(), 92);
 
         Mock::given(method("GET"))
             .and(query_param("module", "proxy"))
